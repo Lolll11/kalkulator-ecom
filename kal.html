@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kalkulator Importu i Marży - Multi Arkusz</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .tab-active {
+            background-color: white !important;
+            color: #1e40af !important;
+            border-bottom: 2px solid #1e40af !important;
+        }
+        .sheet-content {
+            display: none;
+        }
+        .sheet-content.active {
+            display: block;
+        }
+        @media print {
+            .no-print { display: none !important; }
+            .sheet-content { display: block !important; }
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="max-w-full p-4">
+        <!-- Header z zakładkami -->
+        <div class="bg-white rounded-t-lg shadow-sm mb-0">
+            <div class="flex items-center justify-between p-4 border-b">
+                <h1 class="text-2xl font-bold">Kalkulator Importu i Marży</h1>
+                <div class="flex gap-2 no-print">
+                    <button onclick="exportAllSheets()" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 text-sm">
+                        📊 Eksport wszystkich arkuszy
+                    </button>
+                    <button onclick="saveToLocal()" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 text-sm">
+                        💾 Zapisz lokalnie
+                    </button>
+                    <button onclick="loadFromLocal()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">
+                        📂 Wczytaj dane
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Zakładki arkuszy -->
+            <div class="flex items-center bg-gray-50 px-4 overflow-x-auto no-print" id="sheetTabs">
+                <!-- Dynamicznie generowane zakładki -->
+            </div>
+        </div>
+
+        <!-- Główna zawartość arkuszy -->
+        <div id="sheetsContainer">
+            <!-- Dynamicznie generowane arkusze -->
+        </div>
+
+        <!-- Podsumowanie wszystkich arkuszy -->
+        <div class="bg-white rounded-lg shadow mt-6 p-6">
+            <h2 class="text-lg font-bold mb-4">Podsumowanie wszystkich arkuszy</h2>
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+                <div class="bg-gray-50 p-4 rounded">
+                    <div class="text-sm text-gray-600">Łączny koszt importu</div>
+                    <div id="allSheetsImportCost" class="text-xl font-bold text-blue-600">0 PLN</div>
+                </div>
+                <div class="bg-gray-50 p-4 rounded">
+                    <div class="text-sm text-gray-600">Łączny przychód</div>
+                    <div id="allSheetsRevenue" class="text-xl font-bold text-green-600">0 PLN</div>
+                </div>
+                <div class="bg-gray-50 p-4 rounded">
+                    <div class="text-sm text-gray-600">Łączny zysk netto</div>
+                    <div id="allSheetsProfit" class="text-xl font-bold text-green-700">0 PLN</div>
+                </div>
+                <div class="bg-gray-50 p-4 rounded">
+                    <div class="text-sm text-gray-600">Średnia marża</div>
+                    <div id="allSheetsMargin" class="text-xl font-bold text-purple-600">0%</div>
+                </div>
+                <div class="bg-gray-50 p-4 rounded">
+                    <div class="text-sm text-gray-600">Średni ROI</div>
+                    <div id="allSheetsROI" class="text-xl font-bold text-orange-600">0%</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Struktura danych dla wielu arkuszy
+        let sheets = {};
+        let activeSheetId = null;
+        let sheetIdCounter = 1;
+
+        // Inicjalizacja
+        function init() {
+            // Sprawdź czy są zapisane dane
+            const savedData = localStorage.getItem('importCalculatorSheets');
+            if (savedData) {
+                try {
+                    const parsed = JSON.parse(savedData);
+                    sheets = parsed.sheets || {};
+                    sheetIdCounter = parsed.sheetIdCounter || 1;
+                    
+                    // Jeśli są arkusze, ustaw pierwszy jako aktywny
+                    const sheetIds = Object.keys(sheets);
+                    if (sheetIds.length > 0) {
+                        activeSheetId = sheetIds[0];
+                        renderAllSheets();
+                        switchToSheet(activeSheetId);
+                        return;
+                    }
+                } catch (e) {
+                    console.error('Błąd wczytywania danych:', e);
+                }
+            }
+            
+            // Jeśli nie ma danych, stwórz pierwszy arkusz
+            createNewSheet();
+        }
+
+        // Tworzenie nowego arkusza
+        function createNewSheet(name = null) {
+            const sheetId = `sheet_${sheetIdCounter++}`;
+            const sheetName = name || `Arkusz ${Object.keys(sheets).length + 1}`;
+            
+            sheets[sheetId] = {
+                id: sheetId,
+                name: sheetName,
+                products: [],
+                settings: {
+                    exchangeRate: 4.0,
+                    vatRate: 23,
+                    totalTransport: 3000,
+                    allegroFee: 10,
+                    packagingCost: 2,
+                    shippingCost: 15,
+                    otherCosts: 0
+                }
+            };
+            
+            if (!activeSheetId) {
+                activeSheetId = sheetId;
+            }
+            
+            renderAllSheets();
+            switchToSheet(sheetId);
+        }
+
+        // Renderowanie wszystkich arkuszy
+        function renderAllSheets() {
+            renderSheetTabs();
+            renderSheetContents();
+            updateAllSheetsSummary();
+        }
+
+        // Renderowanie zakładek
+        function renderSheetTabs() {
+            const tabsContainer = document.getElementById('sheetTabs');
+            tabsContainer.innerHTML = '';
+            
+            Object.values(sheets).forEach(sheet => {
+                const tab = document.createElement('div');
+                tab.className = `flex items-center gap-2 px-4 py-2 cursor-pointer border-b-2 border-transparent hover:bg-gray-100 ${sheet.id === activeSheetId ? 'tab-active' : ''}`;
+                tab.innerHTML = `
+                    <span onclick="switchToSheet('${sheet.id}')" class="select-none">${sheet.name}</span>
+                    <button onclick="renameSheet('${sheet.id}')" class="text-gray-500 hover:text-gray-700" title="Zmień nazwę">✏️</button>
+                    ${Object.keys(sheets).length > 1 ? `<button onclick="deleteSheet('${sheet.id}')" class="text-red-500 hover:text-red-700" title="Usuń arkusz">❌</button>` : ''}
+                `;
+                tabsContainer.appendChild(tab);
+            });
+            
+            // Przycisk dodawania nowego arkusza
+            const addButton = document.createElement('button');
+            addButton.className = 'px-4 py-2 text-blue-600 hover:bg-blue-50 font-medium';
+            addButton.innerHTML = '+ Nowy arkusz';
+            addButton.onclick = () => createNewSheet();
+            tabsContainer.appendChild(addButton);
+        }
+
+        // Renderowanie zawartości arkuszy
+        function renderSheetContents() {
+            const container = document.getElementById('sheetsContainer');
+            container.innerHTML = '';
+            
+            Object.values(sheets).forEach(sheet => {
+                const sheetDiv = document.createElement('div');
+                sheetDiv.className = `sheet-content ${sheet.id === activeSheetId ? 'active' : ''}`;
+                sheetDiv.id = `sheet_content_${sheet.id}`;
+                sheetDiv.innerHTML = createSheetHTML(sheet);
+                container.appendChild(sheetDiv);
+            });
+        }
+
+        // Tworzenie HTML dla pojedynczego arkusza
+        function createSheetHTML(sheet) {
+            return `
+                <div class="bg-white rounded-b-lg shadow">
+                    <!-- Import i ustawienia -->
+                    <div class="p-6 border-b">
+                        <!-- Import XLSX -->
+                        <div class="mb-4 p-4 bg-blue-50 rounded border-2 border-dashed border-blue-300 no-print">
+                            <input type="file" id="fileInput_${sheet.id}" accept=".xlsx,.xls" onchange="handleFileUpload(event, '${sheet.id}')" 
+                                   class="w-full p-2 border rounded">
+                            <p class="text-sm text-gray-500 mt-2">Wybierz plik XLSX z produktami (packing list)</p>
+                        </div>
+                        
+                        <!-- Ustawienia -->
+                        <div class="mb-6">
+                            <h3 class="font-semibold mb-3">Ustawienia importu:</h3>
+                            <div class="grid grid-cols-2 md:grid-cols-3 gap-4 p-4 bg-gray-50 rounded">
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Kurs USD/PLN</label>
+                                    <input type="number" id="exchangeRate_${sheet.id}" value="${sheet.settings.exchangeRate}" step="0.01" 
+                                           class="w-full p-2 border rounded" onchange="updateSheetSettings('${sheet.id}')">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">VAT (%)</label>
+                                    <input type="number" id="vatRate_${sheet.id}" value="${sheet.settings.vatRate}" 
+                                           class="w-full p-2 border rounded" onchange="updateSheetSettings('${sheet.id}')">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Transport całkowity (PLN)</label>
+                                    <input type="number" id="totalTransport_${sheet.id}" value="${sheet.settings.totalTransport}" 
+                                           class="w-full p-2 border rounded" onchange="updateSheetSettings('${sheet.id}')">
+                                </div>
+                            </div>
+                            
+                            <h3 class="font-semibold mb-3 mt-4">Ustawienia sprzedaży:</h3>
+                            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 bg-gray-50 rounded">
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Domyślna prowizja Allegro (%)</label>
+                                    <input type="number" id="allegroFee_${sheet.id}" value="${sheet.settings.allegroFee}" step="0.1" 
+                                           class="w-full p-2 border rounded" onchange="updateSheetSettings('${sheet.id}')">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Koszty pakowania (PLN/szt)</label>
+                                    <input type="number" id="packagingCost_${sheet.id}" value="${sheet.settings.packagingCost}" step="0.1" 
+                                           class="w-full p-2 border rounded" onchange="updateSheetSettings('${sheet.id}')">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Koszty wysyłki (PLN/szt)</label>
+                                    <input type="number" id="shippingCost_${sheet.id}" value="${sheet.settings.shippingCost}" step="0.1" 
+                                           class="w-full p-2 border rounded" onchange="updateSheetSettings('${sheet.id}')">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Inne koszty (PLN/szt)</label>
+                                    <input type="number" id="otherCosts_${sheet.id}" value="${sheet.settings.otherCosts}" step="0.1" 
+                                           class="w-full p-2 border rounded" onchange="updateSheetSettings('${sheet.id}')">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Przyciski akcji -->
+                        <div class="flex gap-2 no-print">
+                            <button onclick="addProduct('${sheet.id}')" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                                + Dodaj produkt
+                            </button>
+                            <button onclick="loadSampleData('${sheet.id}')" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
+                                Wczytaj przykład
+                            </button>
+                            <button onclick="exportSheetCSV('${sheet.id}')" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700">
+                                Eksport CSV
+                            </button>
+                            <button onclick="clearSheet('${sheet.id}')" class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700">
+                                Wyczyść arkusz
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Podsumowanie arkusza -->
+                    <div class="p-6 border-b">
+                        <h3 class="font-semibold mb-3">Podsumowanie arkusza: ${sheet.name}</h3>
+                        <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+                            <div class="bg-gray-50 p-4 rounded">
+                                <div class="text-sm text-gray-600">Koszt importu</div>
+                                <div id="totalImportCost_${sheet.id}" class="text-xl font-bold text-blue-600">0 PLN</div>
+                            </div>
+                            <div class="bg-gray-50 p-4 rounded">
+                                <div class="text-sm text-gray-600">Przychód</div>
+                                <div id="totalRevenue_${sheet.id}" class="text-xl font-bold text-green-600">0 PLN</div>
+                            </div>
+                            <div class="bg-gray-50 p-4 rounded">
+                                <div class="text-sm text-gray-600">Zysk netto</div>
+                                <div id="totalProfit_${sheet.id}" class="text-xl font-bold text-green-700">0 PLN</div>
+                            </div>
+                            <div class="bg-gray-50 p-4 rounded">
+                                <div class="text-sm text-gray-600">Śr. marża</div>
+                                <div id="avgMargin_${sheet.id}" class="text-xl font-bold text-purple-600">0%</div>
+                            </div>
+                            <div class="bg-gray-50 p-4 rounded">
+                                <div class="text-sm text-gray-600">ROI</div>
+                                <div id="totalROI_${sheet.id}" class="text-xl font-bold text-orange-600">0%</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tabela produktów -->
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th colspan="8" class="px-4 py-2 text-center bg-blue-50 font-semibold">Dane produktu i import</th>
+                                    <th colspan="6" class="px-4 py-2 text-center bg-green-50 font-semibold">Sprzedaż i zyski</th>
+                                    <th colspan="3" class="px-4 py-2 text-center bg-purple-50 font-semibold">Historia sprzedaży</th>
+                                    <th rowspan="2" class="px-4 py-2 text-center no-print">Akcje</th>
+                                </tr>
+                                <tr>
+                                    <th class="px-2 py-2 text-left text-xs">Nazwa</th>
+                                    <th class="px-2 py-2 text-left text-xs">Nr</th>
+                                    <th class="px-2 py-2 text-left text-xs">Cena USD</th>
+                                    <th class="px-2 py-2 text-left text-xs">Ilość</th>
+                                    <th class="px-2 py-2 text-left text-xs">CBM</th>
+                                    <th class="px-2 py-2 text-left text-xs text-orange-600">Cło %</th>
+                                    <th class="px-2 py-2 text-left text-xs text-blue-600">Koszt netto</th>
+                                    <th class="px-2 py-2 text-left text-xs text-red-600">Koszt brutto</th>
+                                    <th class="px-2 py-2 text-left text-xs bg-yellow-50">Cena promo</th>
+                                    <th class="px-2 py-2 text-left text-xs bg-green-50">Cena sprzedaży</th>
+                                    <th class="px-2 py-2 text-left text-xs">Allegro %</th>
+                                    <th class="px-2 py-2 text-left text-xs">Zysk/szt</th>
+                                    <th class="px-2 py-2 text-left text-xs">Marża %</th>
+                                    <th class="px-2 py-2 text-left text-xs">ROI %</th>
+                                    <th class="px-2 py-2 text-left text-xs bg-purple-50">Sprz. promo</th>
+                                    <th class="px-2 py-2 text-left text-xs bg-purple-50">Sprz. normal.</th>
+                                    <th class="px-2 py-2 text-left text-xs bg-purple-50">Łączny zysk</th>
+                                </tr>
+                            </thead>
+                            <tbody id="productsTable_${sheet.id}">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Przełączanie między arkuszami
+        function switchToSheet(sheetId) {
+            activeSheetId = sheetId;
+            
+            // Aktualizuj zakładki
+            document.querySelectorAll('#sheetTabs > div').forEach(tab => {
+                tab.classList.remove('tab-active');
+            });
+            
+            // Aktualizuj zawartość
+            document.querySelectorAll('.sheet-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            const activeContent = document.getElementById(`sheet_content_${sheetId}`);
+            if (activeContent) {
+                activeContent.classList.add('active');
+            }
+            
+            renderSheetTabs();
+            renderProductsTable(sheetId);
+            updateSheetSummary(sheetId);
+        }
+
+        // Zmiana nazwy arkusza
+        function renameSheet(sheetId) {
+            const sheet = sheets[sheetId];
+            const newName = prompt('Podaj nową nazwę arkusza:', sheet.name);
+            if (newName && newName.trim()) {
+                sheet.name = newName.trim();
+                renderAllSheets();
+                saveToLocal();
+            }
+        }
+
+        // Usuwanie arkusza
+        function deleteSheet(sheetId) {
+            if (Object.keys(sheets).length <= 1) {
+                alert('Nie można usunąć ostatniego arkusza!');
+                return;
+            }
+            
+            if (confirm('Czy na pewno chcesz usunąć ten arkusz?')) {
+                delete sheets[sheetId];
+                
+                // Jeśli usunięto aktywny arkusz, przełącz na pierwszy dostępny
+                if (activeSheetId === sheetId) {
+                    activeSheetId = Object.keys(sheets)[0];
+                }
+                
+                renderAllSheets();
+                switchToSheet(activeSheetId);
+                saveToLocal();
+            }
+        }
+
+        // Aktualizacja ustawień arkusza
+        function updateSheetSettings(sheetId) {
+            const sheet = sheets[sheetId];
+            sheet.settings = {
+                exchangeRate: parseFloat(document.getElementById(`exchangeRate_${sheetId}`).value) || 4.0,
+                vatRate: parseFloat(document.getElementById(`vatRate_${sheetId}`).value) || 23,
+                totalTransport: parseFloat(document.getElementById(`totalTransport_${sheetId}`).value) || 0,
+                allegroFee: parseFloat(document.getElementById(`allegroFee_${sheetId}`).value) || 10,
+                packagingCost: parseFloat(document.getElementById(`packagingCost_${sheetId}`).value) || 0,
+                shippingCost: parseFloat(document.getElementById(`shippingCost_${sheetId}`).value) || 0,
+                otherCosts: parseFloat(document.getElementById(`otherCosts_${sheetId}`).value) || 0
+            };
+            
+            renderProductsTable(sheetId);
+            updateSheetSummary(sheetId);
+            updateAllSheetsSummary();
+            saveToLocal();
+        }
+
+        // Obsługa importu pliku
+        function handleFileUpload(event, sheetId) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const sheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[sheetName];
+                    const jsonData = XLSX.utils.sheet_to_json(worksheet);
+                    
+                    processImportedData(jsonData, sheetId);
+                    alert(`Zaimportowano ${jsonData.length} produktów`);
+                } catch (error) {
+                    alert('Błąd odczytu pliku: ' + error.message);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        // Przetwarzanie zaimportowanych danych
+        function processImportedData(data, sheetId) {
+            const sheet = sheets[sheetId];
+            sheet.products = data.map((row, index) => {
+                const name = row["Product\nName"] || row["Product Name"] || row["Nazwa"] || `Produkt ${index + 1}`;
+                const productNumber = row["Product number"] || row["Product Number"] || row["Numer"] || `P${index + 1}`;
+                
+                let unitPriceText = row["Unit\nPrice（单\n价）"] || row["Unit Price"] || row["Cena"] || "0";
+                let unitPriceUSD = 0;
+                if (typeof unitPriceText === 'string') {
+                    const match = unitPriceText.match(/[\d.]+/);
+                    if (match) unitPriceUSD = parseFloat(match[0]);
+                } else {
+                    unitPriceUSD = parseFloat(unitPriceText) || 0;
+                }
+
+                let quantityText = row["Quantity"] || row["Ilość"] || "1";
+                let quantity = 1;
+                if (typeof quantityText === 'string') {
+                    const match = quantityText.match(/\d+/);
+                    if (match) quantity = parseInt(match[0]);
+                } else {
+                    quantity = parseInt(quantityText) || 1;
+                }
+
+                const cbm = parseFloat(row["每一项合\n计Meas\n(CBM)"] || row["CBM"] || row["Objętość"] || 0);
+
+                return {
+                    id: Date.now() + index,
+                    name: name,
+                    productNumber: productNumber,
+                    priceUSD: unitPriceUSD,
+                    quantity: quantity,
+                    cbm: cbm,
+                    customsDuty: 0, // Nowe pole - cło indywidualne
+                    promoPrice: 0,
+                    sellPrice: 0,
+                    allegroFee: sheet.settings.allegroFee,
+                    soldPromo: 0,
+                    soldNormal: 0
+                };
+            });
+
+            renderProductsTable(sheetId);
+            updateSheetSummary(sheetId);
+            updateAllSheetsSummary();
+            saveToLocal();
+        }
+
+        // Dodawanie produktu
+        function addProduct(sheetId) {
+            const sheet = sheets[sheetId];
+            sheet.products.push({
+                id: Date.now(),
+                name: '',
+                productNumber: '',
+                priceUSD: 0,
+                quantity: 1,
+                cbm: 0,
+                customsDuty: 0, // Nowe pole - cło indywidualne
+                promoPrice: 0,
+                sellPrice: 0,
+                allegroFee: sheet.settings.allegroFee,
+                soldPromo: 0,
+                soldNormal: 0
+            });
+            
+            renderProductsTable(sheetId);
+            updateSheetSummary(sheetId);
+            saveToLocal();
+        }
+
+        // Aktualizacja produktu
+        function updateProduct(sheetId, productId, field, value) {
+            const sheet = sheets[sheetId];
+            const product = sheet.products.find(p => p.id === productId);
+            if (product) {
+                if (field === 'name' || field === 'productNumber') {
+                    product[field] = value;
+                } else {
+                    product[field] = parseFloat(value) || 0;
+                }
+                renderProductsTable(sheetId);
+                updateSheetSummary(sheetId);
+                updateAllSheetsSummary();
+                saveToLocal();
+            }
+        }
+
+        // Usuwanie produktu
+        function removeProduct(sheetId, productId) {
+            const sheet = sheets[sheetId];
+            sheet.products = sheet.products.filter(p => p.id !== productId);
+            renderProductsTable(sheetId);
+            updateSheetSummary(sheetId);
+            updateAllSheetsSummary();
+            saveToLocal();
+        }
+
+        // Obliczanie metryk produktu
+        function calculateProductMetrics(product, sheet) {
+            const settings = sheet.settings;
+            
+            // Oblicz łączne CBM wszystkich produktów w arkuszu
+            const totalCBM = sheet.products.reduce((sum, p) => sum + (p.cbm * p.quantity), 0);
+            
+            // Koszt produktu w PLN
+            const pricePLN = product.priceUSD * settings.exchangeRate;
+            
+            // Transport przypadający na jednostkę
+            let transportPerUnit = 0;
+            if (totalCBM > 0 && product.quantity > 0) {
+                const productTotalCBM = product.cbm * product.quantity;
+                const productTransportShare = (productTotalCBM / totalCBM) * settings.totalTransport;
+                transportPerUnit = productTransportShare / product.quantity;
+            }
+            
+            // Koszt importu netto (cena + transport)
+            const importNetCost = pricePLN + transportPerUnit;
+            
+            // Cło - teraz indywidualne dla każdego produktu
+            const customsDutyAmount = importNetCost * (product.customsDuty / 100);
+            
+            // VAT (od wartości z cłem)
+            const vatBase = importNetCost + customsDutyAmount;
+            const vat = vatBase * (settings.vatRate / 100);
+            
+            // Koszt importu brutto
+            const importGrossCost = importNetCost + customsDutyAmount + vat;
+            
+            // Koszty sprzedaży przy cenie normalnej
+            const sellingPrice = product.sellPrice || 0;
+            const allegroFeeAmount = sellingPrice * (product.allegroFee / 100);
+            
+            // Koszty sprzedaży przy cenie promocyjnej
+            const promoPrice = product.promoPrice || 0;
+            const allegroFeePromo = promoPrice * (product.allegroFee / 100);
+            
+            // Całkowity koszt jednostkowy dla ceny normalnej
+            const totalUnitCost = importGrossCost + allegroFeeAmount + settings.packagingCost + settings.shippingCost + settings.otherCosts;
+            
+            // Całkowity koszt jednostkowy dla ceny promocyjnej
+            const totalUnitCostPromo = importGrossCost + allegroFeePromo + settings.packagingCost + settings.shippingCost + settings.otherCosts;
+            
+            // Zysk przy cenie normalnej
+            const profitPerUnit = sellingPrice - totalUnitCost;
+            
+            // Zysk przy cenie promocyjnej
+            const profitPerUnitPromo = promoPrice - totalUnitCostPromo;
+            
+            // Łączny zysk ze sprzedaży
+            const totalSalesProfit = (product.soldNormal * profitPerUnit) + (product.soldPromo * profitPerUnitPromo);
+            
+            // Marża i ROI dla ceny normalnej
+            const margin = sellingPrice > 0 ? (profitPerUnit / sellingPrice) * 100 : 0;
+            const roi = totalUnitCost > 0 ? (profitPerUnit / totalUnitCost) * 100 : 0;
+
+            return {
+                importNetCost: importNetCost,
+                importGrossCost: importGrossCost,
+                totalUnitCost: totalUnitCost,
+                profitPerUnit: profitPerUnit,
+                profitPerUnitPromo: profitPerUnitPromo,
+                totalSalesProfit: totalSalesProfit,
+                margin: margin,
+                roi: roi,
+                totalImportCost: importGrossCost * product.quantity,
+                totalRevenue: (product.soldNormal * sellingPrice) + (product.soldPromo * promoPrice)
+            };
+        }
+
+        // Renderowanie tabeli produktów
+        function renderProductsTable(sheetId) {
+            const sheet = sheets[sheetId];
+            const tbody = document.getElementById(`productsTable_${sheetId}`);
+            if (!tbody) return;
+            
+            tbody.innerHTML = '';
+
+            sheet.products.forEach(product => {
+                const metrics = calculateProductMetrics(product, sheet);
+                const row = tbody.insertRow();
+                
+                const profitClass = metrics.profitPerUnit >= 0 ? 'text-green-600' : 'text-red-600';
+                const marginClass = metrics.margin >= 20 ? 'text-green-600' : (metrics.margin >= 10 ? 'text-orange-600' : 'text-red-600');
+                const totalSold = product.soldPromo + product.soldNormal;
+                const stockRemaining = product.quantity - totalSold;
+                
+                row.innerHTML = `
+                    <td class="px-2 py-2 border-r">
+                        <input type="text" value="${product.name}" 
+                               onchange="updateProduct('${sheetId}', ${product.id}, 'name', this.value)"
+                               class="w-full p-1 border rounded text-xs">
+                    </td>
+                    <td class="px-2 py-2">
+                        <input type="text" value="${product.productNumber}" 
+                               onchange="updateProduct('${sheetId}', ${product.id}, 'productNumber', this.value)"
+                               class="w-16 p-1 border rounded text-xs">
+                    </td>
+                    <td class="px-2 py-2">
+                        <input type="number" value="${product.priceUSD}" step="0.01"
+                               onchange="updateProduct('${sheetId}', ${product.id}, 'priceUSD', this.value)"
+                               class="w-16 p-1 border rounded text-xs">
+                    </td>
+                    <td class="px-2 py-2">
+                        <input type="number" value="${product.quantity}" min="1"
+                               onchange="updateProduct('${sheetId}', ${product.id}, 'quantity', this.value)"
+                               class="w-16 p-1 border rounded text-xs">
+                    </td>
+                    <td class="px-2 py-2">
+                        <input type="number" value="${product.cbm}" step="0.001"
+                               onchange="updateProduct('${sheetId}', ${product.id}, 'cbm', this.value)"
+                               class="w-16 p-1 border rounded text-xs">
+                    </td>
+                    <td class="px-2 py-2">
+                        <input type="number" value="${product.customsDuty}" step="0.1" min="0" max="100"
+                               onchange="updateProduct('${sheetId}', ${product.id}, 'customsDuty', this.value)"
+                               class="w-12 p-1 border rounded text-xs font-medium text-orange-600"
+                               title="Stawka cła dla tego produktu">
+                    </td>
+                    <td class="px-2 py-2">
+                        <span class="text-xs font-medium text-blue-600">${metrics.importNetCost.toFixed(2)}</span>
+                    </td>
+                    <td class="px-2 py-2 border-r">
+                        <span class="text-xs font-medium text-red-600">${metrics.importGrossCost.toFixed(2)}</span>
+                    </td>
+                    <td class="px-2 py-2 bg-yellow-50">
+                        <input type="number" value="${product.promoPrice}" step="0.01"
+                               onchange="updateProduct('${sheetId}', ${product.id}, 'promoPrice', this.value)"
+                               placeholder="0.00"
+                               class="w-16 p-1 border rounded text-xs ${product.promoPrice > 0 ? 'bg-yellow-100' : ''}">
+                    </td>
+                    <td class="px-2 py-2 bg-green-50">
+                        <input type="number" value="${product.sellPrice}" step="0.01"
+                               onchange="updateProduct('${sheetId}', ${product.id}, 'sellPrice', this.value)"
+                               placeholder="0.00"
+                               class="w-16 p-1 border rounded text-xs font-medium ${product.sellPrice === 0 ? 'bg-red-100' : 'bg-green-100'}">
+                    </td>
+                    <td class="px-2 py-2">
+                        <input type="number" value="${product.allegroFee}" step="0.1" min="0" max="30"
+                               onchange="updateProduct('${sheetId}', ${product.id}, 'allegroFee', this.value)"
+                               class="w-12 p-1 border rounded text-xs">
+                    </td>
+                    <td class="px-2 py-2">
+                        <span class="text-xs font-semibold ${profitClass}">${metrics.profitPerUnit.toFixed(2)}</span>
+                    </td>
+                    <td class="px-2 py-2">
+                        <span class="text-xs font-semibold ${marginClass}">${metrics.margin.toFixed(1)}%</span>
+                    </td>
+                    <td class="px-2 py-2 border-r">
+                        <span class="text-xs font-semibold ${metrics.roi >= 50 ? 'text-green-600' : 'text-orange-600'}">${metrics.roi.toFixed(1)}%</span>
+                    </td>
+                    <td class="px-2 py-2 bg-purple-50">
+                        <input type="number" value="${product.soldPromo}" min="0" max="${product.quantity}"
+                               onchange="updateProduct('${sheetId}', ${product.id}, 'soldPromo', this.value)"
+                               class="w-12 p-1 border rounded text-xs">
+                    </td>
+                    <td class="px-2 py-2 bg-purple-50">
+                        <input type="number" value="${product.soldNormal}" min="0" max="${product.quantity}"
+                               onchange="updateProduct('${sheetId}', ${product.id}, 'soldNormal', this.value)"
+                               class="w-12 p-1 border rounded text-xs">
+                    </td>
+                    <td class="px-2 py-2 bg-purple-50 border-r">
+                        <span class="text-xs font-bold ${metrics.totalSalesProfit >= 0 ? 'text-green-600' : 'text-red-600'}">${metrics.totalSalesProfit.toFixed(0)}</span>
+                        <span class="text-xs text-gray-500 block">Stok: ${stockRemaining}</span>
+                    </td>
+                    <td class="px-2 py-2 no-print">
+                        <button onclick="removeProduct('${sheetId}', ${product.id})" 
+                                class="text-red-600 hover:text-red-800 px-2 py-1 text-xs border border-red-300 rounded">
+                            Usuń
+                        </button>
+                    </td>
+                `;
+            });
+        }
+
+        // Aktualizacja podsumowania arkusza
+        function updateSheetSummary(sheetId) {
+            const sheet = sheets[sheetId];
+            let totalImportCost = 0;
+            let totalRevenue = 0;
+            let totalProfit = 0;
+            let validMargins = [];
+
+            sheet.products.forEach(product => {
+                const metrics = calculateProductMetrics(product, sheet);
+                totalImportCost += metrics.totalImportCost;
+                totalRevenue += metrics.totalRevenue;
+                totalProfit += metrics.totalSalesProfit;
+                
+                if (product.sellPrice > 0) {
+                    validMargins.push(metrics.margin);
+                }
+            });
+
+            const avgMargin = validMargins.length > 0 
+                ? validMargins.reduce((a, b) => a + b, 0) / validMargins.length 
+                : 0;
+            
+            const realROI = totalImportCost > 0 ? (totalProfit / totalImportCost) * 100 : 0;
+
+            // Aktualizuj elementy podsumowania
+            const elements = {
+                [`totalImportCost_${sheetId}`]: `${totalImportCost.toFixed(0)} PLN`,
+                [`totalRevenue_${sheetId}`]: `${totalRevenue.toFixed(0)} PLN`,
+                [`totalProfit_${sheetId}`]: `${totalProfit.toFixed(0)} PLN`,
+                [`avgMargin_${sheetId}`]: `${avgMargin.toFixed(1)}%`,
+                [`totalROI_${sheetId}`]: `${realROI.toFixed(1)}%`
+            };
+
+            Object.entries(elements).forEach(([id, value]) => {
+                const element = document.getElementById(id);
+                if (element) element.textContent = value;
+            });
+        }
+
+        // Aktualizacja podsumowania wszystkich arkuszy
+        function updateAllSheetsSummary() {
+            let allImportCost = 0;
+            let allRevenue = 0;
+            let allProfit = 0;
+            let allMargins = [];
+            let totalProducts = 0;
+
+            Object.values(sheets).forEach(sheet => {
+                sheet.products.forEach(product => {
+                    const metrics = calculateProductMetrics(product, sheet);
+                    allImportCost += metrics.totalImportCost;
+                    allRevenue += metrics.totalRevenue;
+                    allProfit += metrics.totalSalesProfit;
+                    
+                    if (product.sellPrice > 0) {
+                        allMargins.push(metrics.margin);
+                    }
+                    totalProducts++;
+                });
+            });
+
+            const avgMargin = allMargins.length > 0 
+                ? allMargins.reduce((a, b) => a + b, 0) / allMargins.length 
+                : 0;
+            
+            const allROI = allImportCost > 0 ? (allProfit / allImportCost) * 100 : 0;
+
+            document.getElementById('allSheetsImportCost').textContent = `${allImportCost.toFixed(0)} PLN`;
+            document.getElementById('allSheetsRevenue').textContent = `${allRevenue.toFixed(0)} PLN`;
+            document.getElementById('allSheetsProfit').textContent = `${allProfit.toFixed(0)} PLN`;
+            document.getElementById('allSheetsMargin').textContent = `${avgMargin.toFixed(1)}%`;
+            document.getElementById('allSheetsROI').textContent = `${allROI.toFixed(1)}%`;
+        }
+
+        // Wczytanie przykładowych danych
+        function loadSampleData(sheetId) {
+            const sheet = sheets[sheetId];
+            sheet.products = [
+                {id: Date.now(), name: "Ochraniacze kolan ogrodowe", productNumber: "J1", priceUSD: 2.7, quantity: 200, cbm: 0.5, customsDuty: 5, promoPrice: 55, sellPrice: 62, allegroFee: 10, soldPromo: 20, soldNormal: 35},
+                {id: Date.now() + 1, name: "Zestaw okularów przeciwsłonecznych", productNumber: "J2", priceUSD: 1.0, quantity: 200, cbm: 0.344, customsDuty: 0, promoPrice: 39, sellPrice: 45, allegroFee: 8.5, soldPromo: 15, soldNormal: 42},
+                {id: Date.now() + 2, name: "Pas bagażowy", productNumber: "J3", priceUSD: 2.1, quantity: 200, cbm: 0.45, customsDuty: 3.5, promoPrice: 55, sellPrice: 62, allegroFee: 12, soldPromo: 10, soldNormal: 28}
+            ];
+            
+            renderProductsTable(sheetId);
+            updateSheetSummary(sheetId);
+            updateAllSheetsSummary();
+            saveToLocal();
+        }
+
+        // Czyszczenie arkusza
+        function clearSheet(sheetId) {
+            if (confirm('Czy na pewno chcesz wyczyścić wszystkie produkty z tego arkusza?')) {
+                sheets[sheetId].products = [];
+                renderProductsTable(sheetId);
+                updateSheetSummary(sheetId);
+                updateAllSheetsSummary();
+                saveToLocal();
+            }
+        }
+
+        // Eksport pojedynczego arkusza do CSV
+        function exportSheetCSV(sheetId) {
+            const sheet = sheets[sheetId];
+            const headers = [
+                'Nazwa', 'Numer', 'Cena USD', 'Ilość', 'CBM', 'Cło %',
+                'Koszt importu netto', 'Koszt importu brutto', 
+                'Cena promocyjna', 'Cena sprzedaży', 
+                'Zysk/szt', 'Marża %', 'ROI %', 
+                'Sprzedane promo', 'Sprzedane normalnie',
+                'Zysk całkowity', 'Przychód całkowity'
+            ];
+            
+            const rows = sheet.products.map(product => {
+                const metrics = calculateProductMetrics(product, sheet);
+                return [
+                    product.name,
+                    product.productNumber,
+                    product.priceUSD,
+                    product.quantity,
+                    product.cbm,
+                    product.customsDuty,
+                    metrics.importNetCost.toFixed(2),
+                    metrics.importGrossCost.toFixed(2),
+                    product.promoPrice,
+                    product.sellPrice,
+                    metrics.profitPerUnit.toFixed(2),
+                    metrics.margin.toFixed(1),
+                    metrics.roi.toFixed(1),
+                    product.soldPromo,
+                    product.soldNormal,
+                    metrics.totalSalesProfit.toFixed(2),
+                    metrics.totalRevenue.toFixed(2)
+                ];
+            });
+            
+            const csvContent = '\ufeff' + [headers, ...rows].map(row => row.join(',')).join('\n');
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${sheet.name}-${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // Eksport wszystkich arkuszy
+        function exportAllSheets() {
+            const wb = XLSX.utils.book_new();
+            
+            Object.values(sheets).forEach(sheet => {
+                const wsData = [
+                    ['Kalkulator Importu i Marży - ' + sheet.name],
+                    [],
+                    ['Ustawienia:'],
+                    ['Kurs USD/PLN', sheet.settings.exchangeRate],
+                    ['VAT %', sheet.settings.vatRate],
+                    ['Transport całkowity PLN', sheet.settings.totalTransport],
+                    ['Prowizja Allegro %', sheet.settings.allegroFee],
+                    ['Koszty pakowania PLN/szt', sheet.settings.packagingCost],
+                    ['Koszty wysyłki PLN/szt', sheet.settings.shippingCost],
+                    [],
+                    ['Nazwa', 'Numer', 'Cena USD', 'Ilość', 'CBM', 'Cło %', 'Koszt netto', 'Koszt brutto', 
+                     'Cena promo', 'Cena sprzedaży', 'Zysk/szt', 'Marża %', 'ROI %', 
+                     'Sprzedane promo', 'Sprzedane normalnie', 'Łączny zysk']
+                ];
+                
+                sheet.products.forEach(product => {
+                    const metrics = calculateProductMetrics(product, sheet);
+                    wsData.push([
+                        product.name,
+                        product.productNumber,
+                        product.priceUSD,
+                        product.quantity,
+                        product.cbm,
+                        product.customsDuty,
+                        metrics.importNetCost.toFixed(2),
+                        metrics.importGrossCost.toFixed(2),
+                        product.promoPrice,
+                        product.sellPrice,
+                        metrics.profitPerUnit.toFixed(2),
+                        metrics.margin.toFixed(1),
+                        metrics.roi.toFixed(1),
+                        product.soldPromo,
+                        product.soldNormal,
+                        metrics.totalSalesProfit.toFixed(2)
+                    ]);
+                });
+                
+                const ws = XLSX.utils.aoa_to_sheet(wsData);
+                XLSX.utils.book_append_sheet(wb, ws, sheet.name.substring(0, 31));
+            });
+            
+            XLSX.writeFile(wb, `Kalkulator-Import-${new Date().toISOString().split('T')[0]}.xlsx`);
+        }
+
+        // Zapisywanie do localStorage
+        function saveToLocal() {
+            const data = {
+                sheets: sheets,
+                sheetIdCounter: sheetIdCounter,
+                activeSheetId: activeSheetId
+            };
+            localStorage.setItem('importCalculatorSheets', JSON.stringify(data));
+        }
+
+        // Wczytywanie z localStorage
+        function loadFromLocal() {
+            const savedData = localStorage.getItem('importCalculatorSheets');
+            if (savedData) {
+                if (confirm('Czy na pewno chcesz wczytać zapisane dane? Obecne dane zostaną zastąpione.')) {
+                    try {
+                        const parsed = JSON.parse(savedData);
+                        sheets = parsed.sheets || {};
+                        sheetIdCounter = parsed.sheetIdCounter || 1;
+                        activeSheetId = parsed.activeSheetId || Object.keys(sheets)[0];
+                        
+                        renderAllSheets();
+                        switchToSheet(activeSheetId);
+                        alert('Dane zostały wczytane pomyślnie!');
+                    } catch (e) {
+                        alert('Błąd wczytywania danych: ' + e.message);
+                    }
+                }
+            } else {
+                alert('Brak zapisanych danych do wczytania.');
+            }
+        }
+
+        // Auto-zapis co 30 sekund
+        setInterval(saveToLocal, 30000);
+
+        // Inicjalizacja przy załadowaniu strony
+        window.onload = init;
+    </script>
+</body>
+</html>
